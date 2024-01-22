@@ -6,7 +6,10 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
@@ -17,18 +20,23 @@ import lombok.NoArgsConstructor;
 
 public class CrptApi {
 
+    private static final String PATH = "/api/v3/lk/documents/create";
+
     public static ObjectMapper objectMapper = new ObjectMapper();
     public static List<Document> documentList = new ArrayList<>();
 
-    private TimeUnit timeUnit;
-    private int requestLimit;
+    private static TimeUnit timeUnit;
+    private static AtomicInteger counter;
+    private static int requestLimit;
+
 
     public CrptApi(TimeUnit timeUnit, int requestLimit) {
         if (requestLimit <= 0) {
             requestLimit = 1;
         }
-        this.timeUnit = timeUnit;
-        this.requestLimit = requestLimit;
+        CrptApi.counter = new AtomicInteger(requestLimit);
+        CrptApi.timeUnit = timeUnit;
+        CrptApi.requestLimit = requestLimit;
     }
 
     public static void main(String[] args) throws Exception {
@@ -36,18 +44,33 @@ public class CrptApi {
         server.createContext("/", new MyHandler());
         server.setExecutor(null);
         server.start();
+        CrptApi crptApi = new CrptApi(TimeUnit.MINUTES, 10);
 
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler.scheduleAtFixedRate(new MyTimerTask(), 0, 1, timeUnit);
+    }
+
+    static class MyTimerTask implements Runnable {
+        public void run() {
+            counter.set(requestLimit);
+        }
     }
 
     static class MyHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            if ("POST".equals(t.getRequestMethod()) && "/api/v3/lk/documents/create".equals(t.getRequestURI().getPath())) {
+            if (counter.get() == 0) {
+                t.sendResponseHeaders(500, 0);
+                t.close();
+                return;
+            }
+            counter.getAndDecrement();
+            if ("POST".equals(t.getRequestMethod()) && PATH.equals(t.getRequestURI().getPath())) {
                 String body = new String(t.getRequestBody().readAllBytes());
                 Document document = objectMapper.readValue(body, Document.class);
                 createDocument(document);
 
-                String response = "Документ сохранён";
+                String response = "Document saved";
                 t.sendResponseHeaders(200, response.length());
                 OutputStream os = t.getResponseBody();
                 os.write(response.getBytes());
@@ -59,7 +82,8 @@ public class CrptApi {
         }
     }
 
-    public static void createDocument(Document document){
+
+    public static void createDocument(Document document) {
         documentList.add(document);
     }
 
